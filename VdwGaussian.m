@@ -1,0 +1,121 @@
+%==============================================================
+% FileName: VdwGaussian.m
+% Description: Calculate interlayer Van Der Waal potential with Gaussian
+%  function energy double density method(Assume graphene layer is rigid)
+% Author: Changhao Li
+% Date created: 17 Jul 2017
+% Version: 1.00
+% Date last revised: 21 Jul 2017
+% Revised by: Changhao Li
+%==============================================================
+% function [energy, atom_ele_g] = VdwGaussian(xindent, yindent)
+clear;
+% Case: Two rigid garaphene sheets, may have relative displacement and rotational angle in x-y
+%  plane. 
+% This program calculate total non-bonded energy(eV) and force(eV/A), then
+%  provide function to plot energy/force distribution on the sheet.
+%==============================================================
+% parameters
+edgelenx = 0.2; % the length of element edge in x direction
+edgeleny = 0.2; % the length of element edge in y direction
+nodex = 11; % the number of node in x direction
+nodey = 11; % the number of node in y direction
+A0_g = 0.142; % lattice parameter of graphene
+A0_h = 0.142; % lattice parameter of substrate
+sigma = A0_g/6; % 2D Gauss function parameter
+cut_r = 2; % cut-off radius for van der Waals potential
+d0 = 0.340 * 1.0; % z-direction distance between two graphene sheets
+xindent = A0_g*sqrt(3)*0; % x direction relative displacement between two sheets
+yindent = A0_g*0; % y direction relative displacement between two sheets
+theta = 3.1415926/2/90 * 0; % rotational angle
+is_gaussian = 'gaussian'; % 'gaussian' or 'homogenized'
+%==============================================================
+% Begin 
+%==============================================================
+% Generate mesh 
+[elelist, nodedof, nodenum, elenum, xmax, ymax] = garapheneMesh(edgelenx, edgeleny, nodex, nodey);
+
+% atom position. atom_g is the upper sheet, atom_h is the lower sheet
+[atom_g, numatom_g] = get_atom_position(xmax, ymax, A0_g, theta, xindent, yindent);
+[atom_h, numatom_h] = get_atom_position(xmax, ymax, A0_h, 0, 0, 0);
+
+% find element numbers of every atom
+atom_ele_g = get_atom_ele(atom_g, nodedof, elelist, edgelenx, edgeleny, nodex-1, xmax, ymax);
+atom_ele_h = get_atom_ele(atom_h, nodedof, elelist, edgelenx, edgeleny, nodex-1, xmax, ymax);
+
+% calculate the coordinate of atoms under the reference frame(OF NO USE NOW)
+% ref_atom_pos = get_ref_atom_pos(atom, atom_ele, nodedof, elelist, edgelenx, edgeleny);
+
+% calculate original Gaussian integral weight under the reference frame(1x1 triangle element)
+gauss_filename = 'vdw_gausswei.dat'; 
+org_wei = get_org_wei(gauss_filename);
+
+% calculate the position of every gauss point under the real frame
+gauss_pos = get_gauss_pos(elelist, nodedof, edgelenx, edgeleny);
+% in every element, find its neighbour elements for
+ele_neighbour_gauss = get_neighbour_nbonded(elelist, nodedof, nodex-1, nodey-1, 0, 0, 0, 0, edgelenx, edgeleny, xmax, ymax, edgelenx);
+% calculate the value of gauss function in every gauss point
+gaussfunc_g = get_gaussfunc(atom_g, atom_ele_g, elenum, numatom_g, sigma, gauss_pos, ele_neighbour_gauss);
+gaussfunc_h = get_gaussfunc(atom_h, atom_ele_h, elenum, numatom_h, sigma, gauss_pos, ele_neighbour_gauss);
+
+% multiply gaussfunc with org_wei in every element
+new_wei_g = zeros(elenum, 12);
+new_wei_h = zeros(elenum, 12);
+new_wei_add_g = zeros(elenum, 1);
+new_wei_add_h = zeros(elenum, 1);
+J0 = edgelenx*edgeleny*0.5; % jacobian determinant
+if strcmp(is_gaussian, 'gaussian')
+for i = 1: elenum
+    for ng = 1:12
+       new_wei_g(i, ng) = org_wei(ng) * gaussfunc_g(i, ng);
+       new_wei_h(i, ng) = org_wei(ng) * gaussfunc_h(i, ng);
+       new_wei_add_g(i) = new_wei_add_g(i) + new_wei_g(i, ng)*J0;
+       new_wei_add_h(i) = new_wei_add_h(i) + new_wei_h(i, ng)*J0;
+    end
+end
+end
+% homogenized energy distribution is implemented if 'homogenized'
+if strcmp(is_gaussian, 'homogenized')
+for i = 1: elenum
+    for ng = 1:12
+        new_wei_g(i, ng) = 2/(3*sqrt(3)/2*A0_g*A0_g)*org_wei(ng); 
+        new_wei_h(i, ng) = 2/(3*sqrt(3)/2*A0_g*A0_g)*org_wei(ng);
+        new_wei_add_g(i) = new_wei_add_g(i) + new_wei_g(i, ng)*J0;
+        new_wei_add_h(i) = new_wei_add_h(i) + new_wei_h(i, ng)*J0;
+    end
+end  
+end
+    
+inte_elenum_g = sum(new_wei_add_g); % in theory, this integral value equals to numatom. But in general, this value is a little less than numatom.
+inte_elenum_h = sum(new_wei_add_h);
+
+% for every element, find non-bonded neighbour within cut-off radius
+ele_neighbour_nbonded = get_neighbour_nbonded(elelist, nodedof, nodex-1, nodey-1, d0, xindent, yindent, 0,  edgelenx, edgeleny, xmax, ymax, cut_r);
+
+% calculate the non-bonded energy in a element
+[energy, ele_energy, gauss_energy] = get_nbenergy(ele_neighbour_nbonded, elelist, gauss_pos, d0, xindent, yindent, edgelenx, edgeleny, new_wei_g, new_wei_h);
+
+% calculate the non-bonded force in every node, just translate the Fortran codes.
+% shapef = get_shapef();
+% [nbforce, gauss_nbforce, spline_neighbour] = get_nbforce(elelist, gauss_pos, ele_neighbour_nbonded, new_wei_g, new_wei_h, ...
+%          shapef, edgelenx, edgeleny, xmax, ymax, d0, xindent, yindent, theta, nodenum, nodex, nodey);
+% 
+% for i = 1:elenum
+%     for j = 1:12
+%         gauss_inplane_nbforce(i, j) = sqrt(gauss_nbforce(i, j, 1)^2 + gauss_nbforce(i, j, 2)^2);     
+%     end
+% end
+
+% plot contour
+% plotForce(nbforce, nodedof, nodenum, xmax, ymax, nodex, nodey, edgelenx, edgeleny);
+% plotEnergy(ele_energy, nodedof, elelist, elenum, edgelenx, edgeleny, xmax, ymax);
+plotGaussEnergy(gaussfunc_g, gauss_pos, elelist, elenum, edgelenx, edgeleny, xmax, ymax);
+
+% plot atom distribution
+% figure
+% scatter(atom_g(:,1), atom_g(:,2), 20, 'red', 'fill');
+% hold on
+% scatter(atom_h(:,1), atom_h(:,2), 20, 'blue');
+
+
+    

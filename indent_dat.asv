@@ -1,0 +1,6 @@
+ze
+for i = 1:25 % x steps
+     for j = 1:25 % y steps
+         
+     end
+end
